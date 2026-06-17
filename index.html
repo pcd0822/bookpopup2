@@ -87,8 +87,10 @@
         // 따라서 API 키를 코드 안에 하드코딩해야 브라우저에서 읽을 수 있습니다.
         const API_KEY = "ttbpcd08221141002"; 
         
-        // 프록시 서버 1순위, 2순위 (Adblocker 등으로 하나가 막혔을 경우를 대비한 Fallback 로직)
+        // 퍼블릭 프록시 서버들 (넷리파이 자체 프록시 실패 시 대비용)
         const PROXIES = [
+            "https://api.codetabs.com/v1/proxy/?quest=",
+            "https://thingproxy.freeboard.io/fetch/",
             "https://corsproxy.io/?",
             "https://api.allorigins.win/raw?url="
         ];
@@ -101,6 +103,25 @@
                 Version: "20131101",
                 ...params
             });
+            
+            // 1순위: Netlify _redirects 자체 프록시 (Adblock 완전 무력화)
+            const netlifyTarget = `/api/${endpoint}?${urlParams.toString()}`;
+            try {
+                const res = await fetch(netlifyTarget);
+                const contentType = res.headers.get("content-type");
+                
+                // 넷리파이 설정이 없어서 엉뚱하게 index.html(text/html)을 반환하는 경우를 걸러냅니다.
+                if (res.ok && contentType && !contentType.includes("text/html")) {
+                    let text = await res.text();
+                    text = text.trim();
+                    if (text.endsWith(';')) text = text.slice(0, -1);
+                    return JSON.parse(text);
+                }
+            } catch (e) {
+                console.warn("Netlify 자체 프록시 실패, 퍼블릭 프록시로 넘어갑니다.");
+            }
+
+            // 2순위: 퍼블릭 프록시 다중 순회 (여러 서버를 돌며 하나라도 성공할 때까지 시도)
             const targetUrl = `http://www.aladin.co.kr/ttb/api/${endpoint}?${urlParams.toString()}`;
             
             for (let proxyBase of PROXIES) {
@@ -111,20 +132,17 @@
                     if (!res.ok) continue; // 서버 에러 시 다음 프록시로 넘어감
                     
                     let text = await res.text();
-                    // 알라딘 JS 응답 포맷팅 에러 방지 (마지막 세미콜론 제거)
                     text = text.trim();
                     if (text.endsWith(';')) text = text.slice(0, -1);
                     
                     return JSON.parse(text);
                 } catch (e) {
                     console.warn(`프록시 연결 실패 (${proxyBase}):`, e);
-                    // 실패하면 다음 반복문을 통해 두 번째 프록시 서버를 시도합니다.
                 }
             }
             
-            // 모든 프록시 서버가 실패했을 때
             console.error("API Fetch Error: 모든 프록시 서버 연결을 실패했습니다.");
-            alert("도서 정보를 불러오지 못했습니다. 😭 브라우저의 광고 차단 앱(AdBlock)을 잠시 끄고 새로고침 해주세요!");
+            alert("도서 정보를 불러오지 못했습니다. 😭 네트워크 상태를 확인하시거나 잠시 후 다시 시도해주세요.");
             return null;
         }
 
