@@ -345,7 +345,7 @@
                                 </button>
                                 
                                 {searchType === 'Keyword' ? (
-                                    <>
+                                    <React.Fragment>
                                         {/* 섹션 1: 완전 일치 도서명 */}
                                         <div className="mb-12">
                                             <h2 className="text-2xl font-title text-gray-800 mb-6 flex items-center gap-2">
@@ -381,7 +381,7 @@
                                                 </div>
                                             )}
                                         </div>
-                                    </>
+                                    </React.Fragment>
                                 ) : (
                                     /* 일반 검색 (저자, 도서명) */
                                     <div>
