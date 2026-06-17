@@ -83,13 +83,15 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // [환경 변수 가이드]
-        // Netlify와 같은 환경에서는 빌드 도구를 통해 process.env.ALADIN_API_KEY 로 주입받을 수 있습니다.
-        // 현재는 CDN 기반 브라우저 런타임이므로 사용자가 제시한 키를 상수로 바인딩합니다.
+        // 빌드 과정 없는 단일 HTML 배포이므로 넷리파이 환경변수가 자동으로 주입되지 않습니다.
+        // 따라서 API 키를 코드 안에 하드코딩해야 브라우저에서 읽을 수 있습니다.
         const API_KEY = "ttbpcd08221141002"; 
         
-        // 브라우저에서 직접 알라딘 API 호출 시 CORS 에러를 막기 위한 우회 프록시
-        const CORS_PROXY = "https://api.allorigins.win/get?url=";
+        // 프록시 서버 1순위, 2순위 (Adblocker 등으로 하나가 막혔을 경우를 대비한 Fallback 로직)
+        const PROXIES = [
+            "https://corsproxy.io/?",
+            "https://api.allorigins.win/raw?url="
+        ];
 
         // 알라딘 API 호출 헬퍼
         async function fetchAladinAPI(endpoint, params) {
@@ -100,19 +102,30 @@
                 ...params
             });
             const targetUrl = `http://www.aladin.co.kr/ttb/api/${endpoint}?${urlParams.toString()}`;
-            const proxyUrl = `${CORS_PROXY}${encodeURIComponent(targetUrl)}`;
             
-            try {
-                const res = await fetch(proxyUrl);
-                const data = await res.json();
-                let contents = data.contents;
-                // 알라딘 JS응답은 끝에 ';'가 붙어 파싱에러가 발생할 수 있으므로 제거
-                if (contents.endsWith(';')) contents = contents.slice(0, -1);
-                return JSON.parse(contents);
-            } catch (e) {
-                console.error("API Fetch Error:", e);
-                return null;
+            for (let proxyBase of PROXIES) {
+                try {
+                    const proxyUrl = proxyBase + encodeURIComponent(targetUrl);
+                    const res = await fetch(proxyUrl);
+                    
+                    if (!res.ok) continue; // 서버 에러 시 다음 프록시로 넘어감
+                    
+                    let text = await res.text();
+                    // 알라딘 JS 응답 포맷팅 에러 방지 (마지막 세미콜론 제거)
+                    text = text.trim();
+                    if (text.endsWith(';')) text = text.slice(0, -1);
+                    
+                    return JSON.parse(text);
+                } catch (e) {
+                    console.warn(`프록시 연결 실패 (${proxyBase}):`, e);
+                    // 실패하면 다음 반복문을 통해 두 번째 프록시 서버를 시도합니다.
+                }
             }
+            
+            // 모든 프록시 서버가 실패했을 때
+            console.error("API Fetch Error: 모든 프록시 서버 연결을 실패했습니다.");
+            alert("도서 정보를 불러오지 못했습니다. 😭 브라우저의 광고 차단 앱(AdBlock)을 잠시 끄고 새로고침 해주세요!");
+            return null;
         }
 
         const { useState, useEffect } = React;
