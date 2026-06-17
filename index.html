@@ -83,67 +83,47 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // 빌드 과정 없는 단일 HTML 배포이므로 넷리파이 환경변수가 자동으로 주입되지 않습니다.
-        // 따라서 API 키를 코드 안에 하드코딩해야 브라우저에서 읽을 수 있습니다.
         const API_KEY = "ttbpcd08221141002"; 
         
-        // 퍼블릭 프록시 서버들 (넷리파이 자체 프록시 실패 시 대비용)
-        const PROXIES = [
-            "https://api.codetabs.com/v1/proxy/?quest=",
-            "https://thingproxy.freeboard.io/fetch/",
-            "https://corsproxy.io/?",
-            "https://api.allorigins.win/raw?url="
-        ];
-
-        // 알라딘 API 호출 헬퍼
-        async function fetchAladinAPI(endpoint, params) {
-            const urlParams = new URLSearchParams({
-                ttbkey: API_KEY,
-                output: "js",
-                Version: "20131101",
-                ...params
-            });
-            
-            // 1순위: Netlify _redirects 자체 프록시 (Adblock 완전 무력화)
-            const netlifyTarget = `/api/${endpoint}?${urlParams.toString()}`;
-            try {
-                const res = await fetch(netlifyTarget);
-                const contentType = res.headers.get("content-type");
+        // 🚀 완벽한 CORS 우회를 위한 JSONP 통신 구현 함수
+        function fetchAladinAPI(endpoint, params) {
+            return new Promise((resolve, reject) => {
+                // 고유한 콜백 함수 이름 생성 (동시 요청 충돌 방지)
+                const callbackName = 'aladinCallback_' + Math.floor(Math.random() * 10000000);
                 
-                // 넷리파이 설정이 없어서 엉뚱하게 index.html(text/html)을 반환하는 경우를 걸러냅니다.
-                if (res.ok && contentType && !contentType.includes("text/html")) {
-                    let text = await res.text();
-                    text = text.trim();
-                    if (text.endsWith(';')) text = text.slice(0, -1);
-                    return JSON.parse(text);
-                }
-            } catch (e) {
-                console.warn("Netlify 자체 프록시 실패, 퍼블릭 프록시로 넘어갑니다.");
-            }
+                // 전역에 콜백 함수 등록: 알라딘 서버가 응답하면 이 함수가 자동 실행됨
+                window[callbackName] = function(data) {
+                    // 실행 후 쓰레기 데이터 정리
+                    delete window[callbackName];
+                    document.body.removeChild(script);
+                    resolve(data);
+                };
 
-            // 2순위: 퍼블릭 프록시 다중 순회 (여러 서버를 돌며 하나라도 성공할 때까지 시도)
-            const targetUrl = `http://www.aladin.co.kr/ttb/api/${endpoint}?${urlParams.toString()}`;
-            
-            for (let proxyBase of PROXIES) {
-                try {
-                    const proxyUrl = proxyBase + encodeURIComponent(targetUrl);
-                    const res = await fetch(proxyUrl);
-                    
-                    if (!res.ok) continue; // 서버 에러 시 다음 프록시로 넘어감
-                    
-                    let text = await res.text();
-                    text = text.trim();
-                    if (text.endsWith(';')) text = text.slice(0, -1);
-                    
-                    return JSON.parse(text);
-                } catch (e) {
-                    console.warn(`프록시 연결 실패 (${proxyBase}):`, e);
-                }
-            }
-            
-            console.error("API Fetch Error: 모든 프록시 서버 연결을 실패했습니다.");
-            alert("도서 정보를 불러오지 못했습니다. 😭 네트워크 상태를 확인하시거나 잠시 후 다시 시도해주세요.");
-            return null;
+                const urlParams = new URLSearchParams({
+                    ttbkey: API_KEY,
+                    output: "js",
+                    Version: "20131101",
+                    callback: callbackName, // JSONP 핵심: 서버에 내 콜백함수 이름 알려주기
+                    ...params
+                });
+                
+                // Netlify의 HTTPS 환경에 맞추어 알라딘 API도 https:// 로 호출해야 Mixed Content 차단이 안 걸립니다.
+                const targetUrl = `https://www.aladin.co.kr/ttb/api/${endpoint}?${urlParams.toString()}`;
+
+                // HTML DOM에 보이지 않는 script 태그를 삽입하여 데이터 우회 수신 (CORS 안 걸림)
+                const script = document.createElement('script');
+                script.src = targetUrl;
+                
+                script.onerror = () => {
+                    delete window[callbackName];
+                    document.body.removeChild(script);
+                    console.error("JSONP Request Error");
+                    alert("서버와 통신에 실패했습니다. 😭 네트워크 상태를 확인해주세요!");
+                    reject(new Error('JSONP fetch failed'));
+                };
+                
+                document.body.appendChild(script);
+            });
         }
 
         const { useState, useEffect } = React;
@@ -174,32 +154,36 @@
             useEffect(() => {
                 async function initLoad() {
                     setLoading(true);
-                    // 1. 베스트셀러 리스트 호출
-                    const listRes = await fetchAladinAPI('ItemList.aspx', {
-                        QueryType: 'Bestseller',
-                        MaxResults: '10',
-                        start: '1',
-                        SearchTarget: 'Book',
-                        Cover: 'Big'
-                    });
+                    try {
+                        // 1. 베스트셀러 리스트 호출
+                        const listRes = await fetchAladinAPI('ItemList.aspx', {
+                            QueryType: 'Bestseller',
+                            MaxResults: '10',
+                            start: '1',
+                            SearchTarget: 'Book',
+                            Cover: 'Big'
+                        });
 
-                    if (listRes && listRes.item) {
-                        // 2. 페이지 정보(itemPage) 등 상세 정보를 위해 개별 상세조회 병렬 호출
-                        const detailPromises = listRes.item.map(book => 
-                            fetchAladinAPI('ItemLookUp.aspx', {
-                                itemIdType: 'ItemId',
-                                ItemId: book.itemId,
-                                Cover: 'Big'
-                            }).then(detailRes => {
-                                if(detailRes && detailRes.item && detailRes.item[0]) {
-                                    return { ...book, ...detailRes.item[0] };
-                                }
-                                return book;
-                            }).catch(() => book)
-                        );
-                        
-                        const mergedBooks = await Promise.all(detailPromises);
-                        setBestsellers(mergedBooks);
+                        if (listRes && listRes.item) {
+                            // 2. 상세조회 병렬 호출
+                            const detailPromises = listRes.item.map(book => 
+                                fetchAladinAPI('ItemLookUp.aspx', {
+                                    itemIdType: 'ItemId',
+                                    ItemId: book.itemId,
+                                    Cover: 'Big'
+                                }).then(detailRes => {
+                                    if(detailRes && detailRes.item && detailRes.item[0]) {
+                                        return { ...book, ...detailRes.item[0] };
+                                    }
+                                    return book;
+                                }).catch(() => book)
+                            );
+                            
+                            const mergedBooks = await Promise.all(detailPromises);
+                            setBestsellers(mergedBooks);
+                        }
+                    } catch (error) {
+                        console.error("베스트셀러 로드 실패:", error);
                     }
                     setLoading(false);
                 }
@@ -216,7 +200,6 @@
                 
                 try {
                     if (searchType === 'Keyword') {
-                        // 키워드 검색 시: 정확도(Title)와 관련도(Keyword) 2가지를 동시 호출하여 섹션 분리
                         const [titleRes, keywordRes] = await Promise.all([
                             fetchAladinAPI('ItemSearch.aspx', { Query: query, QueryType: 'Title', MaxResults: '10', Cover: 'Big' }),
                             fetchAladinAPI('ItemSearch.aspx', { Query: query, QueryType: 'Keyword', MaxResults: '20', Cover: 'Big' })
@@ -239,10 +222,8 @@
                             relatedMatches = keywordRes.item.filter(book => !exactIds.includes(book.itemId));
                         }
 
-                        // 상세 정보(카테고리 등) 보완을 위해 조회된 항목 상세 fetch 로직 생략 (검색결과 목록에서는 속도 고려)
                         setSearchResults({ exact: exactMatches, related: relatedMatches });
                     } else {
-                        // 저자명 / 도서명 검색
                         const res = await fetchAladinAPI('ItemSearch.aspx', {
                             Query: query,
                             QueryType: searchType,
@@ -257,27 +238,30 @@
                 setLoading(false);
             };
 
-            // 도서 상세 클릭 (모달 오픈용 상세데이터 한 번 더 페칭)
+            // 도서 상세 클릭 (모달 오픈)
             const openBookDetail = async (book) => {
                 setLoading(true);
-                const detailRes = await fetchAladinAPI('ItemLookUp.aspx', {
-                    itemIdType: 'ItemId',
-                    ItemId: book.itemId,
-                    Cover: 'Big'
-                });
-                
-                if(detailRes && detailRes.item && detailRes.item[0]) {
-                    setSelectedBook(detailRes.item[0]);
-                } else {
-                    setSelectedBook(book); // 실패 시 기존 정보로 오픈
+                try {
+                    const detailRes = await fetchAladinAPI('ItemLookUp.aspx', {
+                        itemIdType: 'ItemId',
+                        ItemId: book.itemId,
+                        Cover: 'Big'
+                    });
+                    
+                    if(detailRes && detailRes.item && detailRes.item[0]) {
+                        setSelectedBook(detailRes.item[0]);
+                    } else {
+                        setSelectedBook(book);
+                    }
+                } catch (error) {
+                    setSelectedBook(book);
                 }
                 setLoading(false);
             };
 
-            // 카테고리 포맷팅 함수 (상위 3개를 dot으로 줄바꿈)
+            // 카테고리 포맷팅 함수
             const renderCategory = (categoryName) => {
                 if(!categoryName) return <span className="text-gray-400">카테고리 정보 없음</span>;
-                // "국내도서>어린이>동화/명작>국내창작동화" -> 분리
                 const parts = categoryName.split('>').map(p => p.trim()).filter(Boolean);
                 const top3 = parts.slice(0, 3);
                 
@@ -333,7 +317,7 @@
 
                     <main className="max-w-5xl mx-auto px-4 py-8">
                         
-                        {/* 1. 베스트셀러 슬라이드 섹션 (검색 전 혹은 항상 노출 가능) */}
+                        {/* 1. 베스트셀러 슬라이드 섹션 */}
                         {!hasSearched && (
                             <section className="mb-12">
                                 <h2 className="text-2xl font-title text-gray-800 mb-6 flex items-center gap-2">
