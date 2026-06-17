@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>알라딘 북파인더 🥜</title>
+    <!-- 폰트: 학생 타겟에 맞춘 귀엽고 부드러운 글꼴 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Jua&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Gowun Dodum', 'sans-serif'],
+                        title: ['Jua', 'sans-serif'],
+                    },
+                    colors: {
+                        peanut: {
+                            50: '#fdf8f3',
+                            100: '#faefe3',
+                            200: '#f3dbbe',
+                            300: '#ebc092',
+                            400: '#e19d60',
+                            500: '#d98038',
+                        }
+                    },
+                    boxShadow: {
+                        '3d': '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
+                        '3d-hover': '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- React & Babel -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { background-color: #fdf8f3; }
+        
+        /* 피넛 로딩 스피너 애니메이션 */
+        @keyframes bounce-peanut {
+            0%, 100% { transform: translateY(0) rotate(0deg) scale(1); }
+            50% { transform: translateY(-25px) rotate(15deg) scale(1.1); }
+        }
+        .peanut-spinner {
+            animation: bounce-peanut 0.6s infinite ease-in-out;
+            display: inline-block;
+            font-size: 4rem;
+            filter: drop-shadow(0 10px 8px rgb(0 0 0 / 0.15));
+        }
+
+        /* 횡스크롤바 숨기기 */
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* 버튼 인터랙션 (누름 효과) */
+        .btn-press {
+            transition: all 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .btn-press:active {
+            transform: scale(0.92);
+        }
+
+        /* 텍스트 생략 */
+        .line-clamp-3 {
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // [환경 변수 가이드]
+        // Netlify와 같은 환경에서는 빌드 도구를 통해 process.env.ALADIN_API_KEY 로 주입받을 수 있습니다.
+        // 현재는 CDN 기반 브라우저 런타임이므로 사용자가 제시한 키를 상수로 바인딩합니다.
+        const API_KEY = "ttbpcd08221141002"; 
+        
+        // 브라우저에서 직접 알라딘 API 호출 시 CORS 에러를 막기 위한 우회 프록시
+        const CORS_PROXY = "https://api.allorigins.win/get?url=";
+
+        // 알라딘 API 호출 헬퍼
+        async function fetchAladinAPI(endpoint, params) {
+            const urlParams = new URLSearchParams({
+                ttbkey: API_KEY,
+                output: "js",
+                Version: "20131101",
+                ...params
+            });
+            const targetUrl = `http://www.aladin.co.kr/ttb/api/${endpoint}?${urlParams.toString()}`;
+            const proxyUrl = `${CORS_PROXY}${encodeURIComponent(targetUrl)}`;
+            
+            try {
+                const res = await fetch(proxyUrl);
+                const data = await res.json();
+                let contents = data.contents;
+                // 알라딘 JS응답은 끝에 ';'가 붙어 파싱에러가 발생할 수 있으므로 제거
+                if (contents.endsWith(';')) contents = contents.slice(0, -1);
+                return JSON.parse(contents);
+            } catch (e) {
+                console.error("API Fetch Error:", e);
+                return null;
+            }
+        }
+
+        const { useState, useEffect } = React;
+
+        // --- 공통 컴포넌트: 피넛 로딩창 ---
+        const LoadingOverlay = () => (
+            <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-white/60 backdrop-blur-sm">
+                <div className="peanut-spinner">🥜</div>
+                <h2 className="mt-6 text-xl font-title text-peanut-500 tracking-wider">책장 뒤지는 중...</h2>
+            </div>
+        );
+
+        // --- 메인 애플리케이션 ---
+        const App = () => {
+            const [loading, setLoading] = useState(false);
+            const [bestsellers, setBestsellers] = useState([]);
+            
+            // 검색 상태
+            const [searchType, setSearchType] = useState('Keyword');
+            const [query, setQuery] = useState('');
+            const [hasSearched, setHasSearched] = useState(false);
+            const [searchResults, setSearchResults] = useState({ exact: [], related: [] });
+
+            // 모달 상태
+            const [selectedBook, setSelectedBook] = useState(null);
+
+            // 초기 로딩 시 베스트셀러 가져오기
+            useEffect(() => {
+                async function initLoad() {
+                    setLoading(true);
+                    // 1. 베스트셀러 리스트 호출
+                    const listRes = await fetchAladinAPI('ItemList.aspx', {
+                        QueryType: 'Bestseller',
+                        MaxResults: '10',
+                        start: '1',
+                        SearchTarget: 'Book',
+                        Cover: 'Big'
+                    });
+
+                    if (listRes && listRes.item) {
+                        // 2. 페이지 정보(itemPage) 등 상세 정보를 위해 개별 상세조회 병렬 호출
+                        const detailPromises = listRes.item.map(book => 
+                            fetchAladinAPI('ItemLookUp.aspx', {
+                                itemIdType: 'ItemId',
+                                ItemId: book.itemId,
+                                Cover: 'Big'
+                            }).then(detailRes => {
+                                if(detailRes && detailRes.item && detailRes.item[0]) {
+                                    return { ...book, ...detailRes.item[0] };
+                                }
+                                return book;
+                            }).catch(() => book)
+                        );
+                        
+                        const mergedBooks = await Promise.all(detailPromises);
+                        setBestsellers(mergedBooks);
+                    }
+                    setLoading(false);
+                }
+                initLoad();
+            }, []);
+
+            // 검색 실행 함수
+            const handleSearch = async (e) => {
+                e.preventDefault();
+                if (!query.trim()) return;
+
+                setLoading(true);
+                setHasSearched(true);
+                
+                try {
+                    if (searchType === 'Keyword') {
+                        // 키워드 검색 시: 정확도(Title)와 관련도(Keyword) 2가지를 동시 호출하여 섹션 분리
+                        const [titleRes, keywordRes] = await Promise.all([
+                            fetchAladinAPI('ItemSearch.aspx', { Query: query, QueryType: 'Title', MaxResults: '10', Cover: 'Big' }),
+                            fetchAladinAPI('ItemSearch.aspx', { Query: query, QueryType: 'Keyword', MaxResults: '20', Cover: 'Big' })
+                        ]);
+
+                        let exactMatches = [];
+                        let relatedMatches = [];
+                        
+                        const cleanQuery = query.replace(/\s/g, '').toLowerCase();
+
+                        if (titleRes && titleRes.item) {
+                            exactMatches = titleRes.item.filter(book => {
+                                const cleanTitle = book.title.split('-')[0].replace(/\s/g, '').toLowerCase();
+                                return cleanTitle.includes(cleanQuery);
+                            });
+                        }
+
+                        if (keywordRes && keywordRes.item) {
+                            const exactIds = exactMatches.map(b => b.itemId);
+                            relatedMatches = keywordRes.item.filter(book => !exactIds.includes(book.itemId));
+                        }
+
+                        // 상세 정보(카테고리 등) 보완을 위해 조회된 항목 상세 fetch 로직 생략 (검색결과 목록에서는 속도 고려)
+                        setSearchResults({ exact: exactMatches, related: relatedMatches });
+                    } else {
+                        // 저자명 / 도서명 검색
+                        const res = await fetchAladinAPI('ItemSearch.aspx', {
+                            Query: query,
+                            QueryType: searchType,
+                            MaxResults: '20',
+                            Cover: 'Big'
+                        });
+                        setSearchResults({ exact: [], related: res?.item || [] });
+                    }
+                } catch (error) {
+                    console.error("검색 실패", error);
+                }
+                setLoading(false);
+            };
+
+            // 도서 상세 클릭 (모달 오픈용 상세데이터 한 번 더 페칭)
+            const openBookDetail = async (book) => {
+                setLoading(true);
+                const detailRes = await fetchAladinAPI('ItemLookUp.aspx', {
+                    itemIdType: 'ItemId',
+                    ItemId: book.itemId,
+                    Cover: 'Big'
+                });
+                
+                if(detailRes && detailRes.item && detailRes.item[0]) {
+                    setSelectedBook(detailRes.item[0]);
+                } else {
+                    setSelectedBook(book); // 실패 시 기존 정보로 오픈
+                }
+                setLoading(false);
+            };
+
+            // 카테고리 포맷팅 함수 (상위 3개를 dot으로 줄바꿈)
+            const renderCategory = (categoryName) => {
+                if(!categoryName) return <span className="text-gray-400">카테고리 정보 없음</span>;
+                // "국내도서>어린이>동화/명작>국내창작동화" -> 분리
+                const parts = categoryName.split('>').map(p => p.trim()).filter(Boolean);
+                const top3 = parts.slice(0, 3);
+                
+                return (
+                    <ul className="mt-2 space-y-1 text-sm font-medium text-gray-600">
+                        {top3.map((cat, idx) => (
+                            <li key={idx} className="flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-peanut-400"></span>
+                                {cat}
+                            </li>
+                        ))}
+                    </ul>
+                );
+            };
+
+            return (
+                <div className="min-h-screen pb-20">
+                    {loading && <LoadingOverlay />}
+
+                    {/* 상단 헤더 & 검색 바 */}
+                    <header className="bg-white shadow-sm sticky top-0 z-30">
+                        <div className="max-w-5xl mx-auto px-4 py-6">
+                            <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                                <h1 className="text-3xl font-title text-peanut-500 flex items-center gap-2 cursor-pointer" onClick={() => window.location.reload()}>
+                                    🥜 땅콩 북파인더 📚
+                                </h1>
+                                
+                                <form onSubmit={handleSearch} className="flex w-full md:w-auto items-center bg-peanut-50 p-2 rounded-2xl shadow-inner border border-peanut-100">
+                                    <select 
+                                        className="bg-transparent text-gray-700 font-bold px-3 py-2 outline-none cursor-pointer"
+                                        value={searchType}
+                                        onChange={(e) => setSearchType(e.target.value)}
+                                    >
+                                        <option value="Keyword">키워드</option>
+                                        <option value="Title">도서명</option>
+                                        <option value="Author">저자명</option>
+                                    </select>
+                                    <div className="h-6 w-px bg-peanut-300 mx-2"></div>
+                                    <input 
+                                        type="text" 
+                                        placeholder="어떤 책을 찾으시나요?" 
+                                        className="bg-transparent border-none outline-none flex-1 px-2 min-w-[200px]"
+                                        value={query}
+                                        onChange={(e) => setQuery(e.target.value)}
+                                    />
+                                    <button type="submit" className="btn-press bg-peanut-400 text-white p-3 rounded-xl ml-2 shadow-md hover:bg-peanut-500">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-5xl mx-auto px-4 py-8">
+                        
+                        {/* 1. 베스트셀러 슬라이드 섹션 (검색 전 혹은 항상 노출 가능) */}
+                        {!hasSearched && (
+                            <section className="mb-12">
+                                <h2 className="text-2xl font-title text-gray-800 mb-6 flex items-center gap-2">
+                                    🌟 지금 가장 핫한 베스트셀러
+                                </h2>
+                                <div className="flex overflow-x-auto gap-6 pb-8 scrollbar-hide snap-x">
+                                    {bestsellers.map(book => (
+                                        <div 
+                                            key={book.itemId} 
+                                            onClick={() => openBookDetail(book)}
+                                            className="btn-press cursor-pointer snap-start shrink-0 w-72 bg-white rounded-3xl p-5 shadow-3d hover:shadow-3d-hover transition-all duration-300 border border-orange-50 flex flex-col group"
+                                        >
+                                            <div className="h-48 w-full rounded-2xl overflow-hidden bg-gray-100 mb-4 shadow-inner relative">
+                                                <img src={book.cover} alt="표지" className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" />
+                                            </div>
+                                            <div className="flex-1">
+                                                <h3 className="font-bold text-lg text-gray-800 leading-tight mb-2 line-clamp-2">{book.title}</h3>
+                                                <p className="text-sm text-gray-500 mb-2">👩‍🏫 {book.author.split(',')[0]}</p>
+                                                <p className="text-xs text-gray-400 mb-3 bg-gray-50 p-2 rounded-lg line-clamp-3">
+                                                    {book.description || "줄거리 정보가 제공되지 않습니다."}
+                                                </p>
+                                            </div>
+                                            <div className="mt-auto pt-3 border-t border-gray-100 flex justify-between items-center text-xs font-bold text-peanut-500">
+                                                <span>📖 {book.itemPage ? `${book.itemPage}쪽` : '페이지 정보 없음'}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </section>
+                        )}
+
+                        {/* 2. 검색 결과 섹션 */}
+                        {hasSearched && (
+                            <section className="animate-[fadeIn_0.5s_ease-out]">
+                                <button 
+                                    onClick={() => { setHasSearched(false); setQuery(''); }} 
+                                    className="btn-press mb-6 text-sm text-peanut-500 font-bold bg-white px-4 py-2 rounded-full shadow-sm border border-peanut-100 inline-flex items-center gap-2"
+                                >
+                                    ← 베스트셀러 홈으로 가기
+                                </button>
+                                
+                                {searchType === 'Keyword' ? (
+                                    <>
+                                        {/* 섹션 1: 완전 일치 도서명 */}
+                                        <div className="mb-12">
+                                            <h2 className="text-2xl font-title text-gray-800 mb-6 flex items-center gap-2">
+                                                🎯 '{query}' 키워드 찰떡 매칭 도서!
+                                            </h2>
+                                            {searchResults.exact.length > 0 ? (
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                                                    {searchResults.exact.map(book => (
+                                                        <BookGridCard key={`exact-${book.itemId}`} book={book} onClick={() => openBookDetail(book)} />
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <div className="bg-white rounded-3xl p-8 text-center text-gray-400 shadow-sm border border-dashed border-gray-200">
+                                                    찰떡같이 똑같은 이름의 책은 못 찾았어요 🥲
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* 섹션 2: 관련 도서 */}
+                                        <div>
+                                            <h2 className="text-2xl font-title text-gray-800 mb-6 flex items-center gap-2">
+                                                📚 같이 보면 좋은 관련 도서
+                                            </h2>
+                                            {searchResults.related.length > 0 ? (
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                                                    {searchResults.related.map(book => (
+                                                        <BookGridCard key={`rel-${book.itemId}`} book={book} onClick={() => openBookDetail(book)} />
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <div className="bg-white rounded-3xl p-8 text-center text-gray-400 shadow-sm border border-dashed border-gray-200">
+                                                    관련된 책이 없네요! 다른 검색어로 찾아볼까요? 🔍
+                                                </div>
+                                            )}
+                                        </div>
+                                    </>
+                                ) : (
+                                    /* 일반 검색 (저자, 도서명) */
+                                    <div>
+                                        <h2 className="text-2xl font-title text-gray-800 mb-6 flex items-center gap-2">
+                                            🔎 '{query}' 검색 결과
+                                        </h2>
+                                        {searchResults.related.length > 0 ? (
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                                                {searchResults.related.map(book => (
+                                                    <BookGridCard key={`search-${book.itemId}`} book={book} onClick={() => openBookDetail(book)} />
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <div className="bg-white rounded-3xl p-8 text-center text-gray-400 shadow-sm border border-dashed border-gray-200">
+                                                검색 결과가 없습니다. 텅~ 🌬️
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </section>
+                        )}
+                    </main>
+
+                    {/* 3. 도서 상세 모달 */}
+                    {selectedBook && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                            {/* 백그라운드 딤 처리 */}
+                            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm cursor-pointer transition-opacity" onClick={() => setSelectedBook(null)}></div>
+                            
+                            {/* 모달 박스 */}
+                            <div className="relative bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl p-6 md:p-8 animate-[translateY_-10px_0.3s_ease-out] z-10 max-h-[90vh] overflow-y-auto">
+                                <button 
+                                    className="btn-press absolute top-6 right-6 bg-gray-100 text-gray-600 hover:bg-gray-200 w-10 h-10 rounded-full flex items-center justify-center font-bold"
+                                    onClick={() => setSelectedBook(null)}
+                                >
+                                    ✕
+                                </button>
+
+                                <div className="flex flex-col md:flex-row gap-8 mt-4">
+                                    <div className="w-full md:w-1/3 flex justify-center items-start shrink-0">
+                                        <img src={selectedBook.cover} alt="표지" className="w-48 md:w-full rounded-2xl shadow-lg border border-gray-100" />
+                                    </div>
+                                    <div className="flex-1">
+                                        <div className="inline-block bg-peanut-100 text-peanut-500 font-bold px-3 py-1 rounded-xl text-xs mb-3">
+                                            도서 상세 정보
+                                        </div>
+                                        <h2 className="text-2xl font-bold text-gray-800 mb-2 leading-tight">
+                                            {selectedBook.title}
+                                        </h2>
+                                        <p className="text-gray-500 font-medium mb-6">👩‍🏫 {selectedBook.author}</p>
+                                        
+                                        <div className="bg-gray-50 rounded-2xl p-5 mb-6 shadow-inner">
+                                            <h4 className="font-title text-gray-700 mb-2 flex items-center gap-2">
+                                                🏷️ 분류 카테고리
+                                            </h4>
+                                            {renderCategory(selectedBook.categoryName)}
+                                        </div>
+
+                                        <div className="bg-peanut-50/50 border border-peanut-100 rounded-2xl p-5">
+                                            <h4 className="font-title text-gray-700 mb-3 flex items-center gap-2">
+                                                📝 줄거리 요약
+                                            </h4>
+                                            <p className="text-sm text-gray-700 leading-relaxed">
+                                                {selectedBook.description || "등록된 줄거리 요약이 없습니다."}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // 검색 결과용 그리드 카드 컴포넌트
+        const BookGridCard = ({ book, onClick }) => (
+            <div 
+                onClick={onClick}
+                className="btn-press cursor-pointer bg-white rounded-3xl p-4 shadow-3d hover:shadow-3d-hover transition-all duration-300 border border-orange-50 flex flex-col group h-full"
+            >
+                <div className="h-40 w-full rounded-2xl overflow-hidden bg-gray-50 mb-4 flex items-center justify-center p-2 relative">
+                    <img src={book.cover} alt="표지" className="h-full object-contain group-hover:scale-105 transition-transform duration-300" />
+                </div>
+                <h3 className="font-bold text-gray-800 text-sm mb-1 line-clamp-2 leading-snug">{book.title}</h3>
+                <p className="text-xs text-gray-500 mt-auto pt-2 border-t border-gray-100 line-clamp-1">{book.author.split(',')[0]}</p>
+            </div>
+        );
+
+        // 렌더링
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
