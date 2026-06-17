@@ -218,7 +218,7 @@
                             MaxResults: '20',
                             Cover: 'Big'
                         });
-                        setSearchResults({ exact: [], related: res?.item || [] });
+                        setSearchResults({ exact: [], related: (res && res.item) ? res.item : [] });
                     }
                 } catch (error) {
                     console.error("검색 실패", error);
